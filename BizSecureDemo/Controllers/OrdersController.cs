@@ -41,8 +41,9 @@ public class OrdersController : Controller
     public async Task<IActionResult> Details(int id)
     {
         // Обърнете внимание: търсим само по Id, без проверка за собственост
-        var uid = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id && o.UserId == uid);
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+        //var uid = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        //var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id && o.UserId == uid);
         if (order == null) return NotFound();
         return View(order);
     }
