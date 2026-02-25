@@ -7,10 +7,10 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.RateLimiting;
 
 
 namespace BizSecureDemo.Controllers;
-
 
 public class AccountController : Controller
 {
@@ -28,15 +28,19 @@ public class AccountController : Controller
     [HttpGet]
     public IActionResult Register() => View(new RegisterVm());
 
-
     [HttpPost]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Register(RegisterVm vm)
     {
         if (!ModelState.IsValid) return View(vm);
+
+
         var email = vm.Email.Trim().ToLowerInvariant();
+
+
         if (await _db.Users.AnyAsync(u => u.Email == email))
         {
+
             ModelState.AddModelError("", "Този email вече е регистриран.");
             return View(vm);
         }
@@ -53,11 +57,7 @@ public class AccountController : Controller
         return RedirectToAction("Login");
     }
 
-
-    [HttpGet]
-    public IActionResult Login() => View(new LoginVm());
-
-
+    [EnableRateLimiting("login")]
     [HttpPost]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Login(LoginVm vm)
@@ -69,27 +69,66 @@ public class AccountController : Controller
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
 
 
-        if (user == null ||
-            _hasher.VerifyHashedPassword(user, user.PasswordHash, vm.Password) == PasswordVerificationResult.Failed)
+        // Do not reveal whether user exists
+        if (user == null)
         {
-            ModelState.AddModelError("", "Грешен email или парола.");
+            ModelState.AddModelError("", "Wrong email or password.");
+
             return View(vm);
         }
 
 
+        // Check lockout
+        if (user.LockoutUntilUtc != null && user.LockoutUntilUtc > DateTime.UtcNow)
+        {
+            ModelState.AddModelError("", "Account is temporarily locked. Try again later.");
+            return View(vm);
+        }
+
+
+        // Wrong password
+        if (_hasher.VerifyHashedPassword(user, user.PasswordHash, vm.Password) == PasswordVerificationResult.Failed)
+        {
+            user.FailedLogins++;
+
+
+            if (user.FailedLogins >= 5)
+            {
+                user.LockoutUntilUtc = DateTime.UtcNow.AddMinutes(5);
+                user.FailedLogins = 0;
+            }
+            await _db.SaveChangesAsync();
+            ModelState.AddModelError("", "Wrong email or password.");
+            return View(vm);
+        }
+
+        // Success → reset counters
+        user.FailedLogins = 0;
+        user.LockoutUntilUtc = null;
+        await _db.SaveChangesAsync();
+
+
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new(ClaimTypes.Name, user.Email)
+        new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+        new(ClaimTypes.Name, user.Email)
         };
 
 
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+
+
         return RedirectToAction("Index", "Home");
     }
 
 
+    [HttpGet]
+    public IActionResult Login() => View(new LoginVm());
+
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> Logout()
     {
         await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
